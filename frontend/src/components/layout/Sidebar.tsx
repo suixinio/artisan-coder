@@ -1,6 +1,7 @@
 import { NavLink } from 'react-router-dom'
 import { LayoutDashboard, FolderKanban, Settings } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { useUserStore } from '@/stores/userStore'
 
 const navItems = [
   { title: 'Dashboard', href: '/', icon: LayoutDashboard },
@@ -9,8 +10,23 @@ const navItems = [
 ]
 
 export function Sidebar() {
+  const { sidebarOpen, toggleSidebar } = useUserStore()
+
+  const handleNavClick = () => {
+    // Close sidebar on mobile after navigation
+    if (window.innerWidth < 768) {
+      toggleSidebar()
+    }
+  }
+
   return (
-    <aside className="hidden w-64 flex-col border-r bg-background md:flex">
+    <aside
+      className={cn(
+        'fixed inset-y-0 left-0 z-50 w-64 flex-col border-r bg-background transition-transform duration-200 ease-in-out flex',
+        'md:relative md:translate-x-0',
+        sidebarOpen ? 'translate-x-0' : '-translate-x-full'
+      )}
+    >
       {/* Logo */}
       <div className="flex h-16 items-center border-b px-6">
         <h1 className="text-lg font-bold">Artisan Coder</h1>
@@ -22,6 +38,7 @@ export function Sidebar() {
           <NavLink
             key={item.href}
             to={item.href}
+            onClick={handleNavClick}
             className={({ isActive }) =>
               cn(
                 'flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors',

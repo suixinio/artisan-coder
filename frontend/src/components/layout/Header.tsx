@@ -1,4 +1,3 @@
-import { useState } from 'react'
 import { Menu, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
@@ -15,8 +14,7 @@ import { useNavigate } from 'react-router-dom'
 import { ThemeSwitch } from '@/components/theme-switch'
 
 export function Header() {
-  const [sidebarOpen, setSidebarOpen] = useState(false)
-  const { user, logout } = useUserStore()
+  const { user, logout, sidebarOpen, toggleSidebar } = useUserStore()
   const navigate = useNavigate()
 
   const handleLogout = async () => {
@@ -36,7 +34,9 @@ export function Header() {
         variant="ghost"
         size="icon"
         className="md:hidden"
-        onClick={() => setSidebarOpen(!sidebarOpen)}
+        onClick={toggleSidebar}
+        aria-label={sidebarOpen ? 'Close menu' : 'Open menu'}
+        aria-expanded={sidebarOpen}
       >
         {sidebarOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
       </Button>

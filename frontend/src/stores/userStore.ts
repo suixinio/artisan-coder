@@ -13,6 +13,7 @@ interface UserState {
   token: string | null
   isAuthenticated: boolean
   isLoading: boolean
+  sidebarOpen: boolean
 
   // Actions
   login: (credentials: LoginRequest) => Promise<void>
@@ -20,6 +21,7 @@ interface UserState {
   logout: () => Promise<void>
   refreshToken: () => Promise<void>
   initialize: () => void
+  toggleSidebar: () => void
 }
 
 export const useUserStore = create<UserState>()(
@@ -29,6 +31,7 @@ export const useUserStore = create<UserState>()(
       token: null,
       isAuthenticated: false,
       isLoading: false,
+      sidebarOpen: false,
 
       login: async (credentials: LoginRequest) => {
         set({ isLoading: true })
@@ -116,6 +119,10 @@ export const useUserStore = create<UserState>()(
             isAuthenticated: true,
           })
         }
+      },
+
+      toggleSidebar: () => {
+        set({ sidebarOpen: !get().sidebarOpen })
       },
     }),
     {
