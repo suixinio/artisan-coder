@@ -11,6 +11,7 @@ const USE_MOCK = import.meta.env.VITE_USE_MOCK === 'true'
 interface UserState {
   user: User | null
   token: string | null
+  refreshToken: string | null
   isAuthenticated: boolean
   isLoading: boolean
   sidebarOpen: boolean
@@ -19,7 +20,7 @@ interface UserState {
   login: (credentials: LoginRequest) => Promise<void>
   register: (data: RegisterRequest) => Promise<void>
   logout: () => Promise<void>
-  refreshToken: () => Promise<void>
+  refreshAccessToken: () => Promise<void>
   initialize: () => void
   toggleSidebar: () => void
 }
@@ -29,6 +30,7 @@ export const useUserStore = create<UserState>()(
     (set, get) => ({
       user: null,
       token: null,
+      refreshToken: null,
       isAuthenticated: false,
       isLoading: false,
       sidebarOpen: false,
@@ -43,6 +45,7 @@ export const useUserStore = create<UserState>()(
           set({
             user: response.user,
             token: response.token,
+            refreshToken: response.refreshToken,
             isAuthenticated: true,
             isLoading: false,
           })
@@ -62,6 +65,7 @@ export const useUserStore = create<UserState>()(
           set({
             user: response.user,
             token: response.token,
+            refreshToken: response.refreshToken,
             isAuthenticated: true,
             isLoading: false,
           })
@@ -82,6 +86,7 @@ export const useUserStore = create<UserState>()(
           set({
             user: null,
             token: null,
+            refreshToken: null,
             isAuthenticated: false,
             isLoading: false,
           })
@@ -91,24 +96,34 @@ export const useUserStore = create<UserState>()(
         }
       },
 
-      refreshToken: async () => {
-        const { token } = get()
-        if (!token) return
+      refreshAccessToken: async () => {
+        const { refreshToken: currentRefreshToken } = get()
+        if (!currentRefreshToken) {
+          throw new Error('No refresh token available')
+        }
 
         try {
           const response = await authService.refreshToken()
           set({
             user: response.user,
             token: response.token,
+            refreshToken: response.refreshToken,
           })
         } catch (error) {
-          set({ user: null, token: null, isAuthenticated: false })
+          // Token refresh failed, clear state
+          set({
+            user: null,
+            token: null,
+            refreshToken: null,
+            isAuthenticated: false,
+          })
           throw error
         }
       },
 
       initialize: () => {
         const token = localStorage.getItem('token')
+        const refreshToken = localStorage.getItem('refreshToken')
         const userStr = localStorage.getItem('user')
         const user = userStr ? JSON.parse(userStr) : null
 
@@ -116,6 +131,7 @@ export const useUserStore = create<UserState>()(
           set({
             user,
             token,
+            refreshToken,
             isAuthenticated: true,
           })
         }
@@ -127,7 +143,11 @@ export const useUserStore = create<UserState>()(
     }),
     {
       name: 'user-storage',
-      partialize: (state) => ({ user: state.user, token: state.token }),
+      partialize: (state) => ({
+        user: state.user,
+        token: state.token,
+        refreshToken: state.refreshToken,
+      }),
     }
   )
 )

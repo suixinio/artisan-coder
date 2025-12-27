@@ -1,3 +1,5 @@
 .serena
 .playwright-mcp
 .worktree
+.env
+bin

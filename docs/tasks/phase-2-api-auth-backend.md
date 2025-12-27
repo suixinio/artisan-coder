@@ -70,24 +70,39 @@ Phase 1 已完成前端登录注册界面和 Dashboard，使用 Mock 数据进�
 | **GORM** | 1.25+ | ORM 库 |
 | **PostgreSQL** | 15+ | 关系型数据库 |
 | **JWT-Go** | 5.0+ | JWT Token 生成与验证 |
+| **FX** | 1.20+ | 依赖注入框架 |
 
 ### 2.2 开发工具
 
 | 工具 | 用途 |
 |------|------|
+| **Viper** | 配置管理（支持多格式配置文件、环境变量、默认值） |
 | **golang-migrate** | 数据库迁移工具 |
-| **air** | 热重载开发工具 |
 | **swag** | API 文档生成（Swagger） |
 | **testify** | 单元测试框架 |
 
 ### 2.3 依赖安装
 
 ```bash
+# 核心依赖
 go get -u github.com/gin-gonic/gin
 go get -u gorm.io/gorm
 go get -u gorm.io/driver/postgres
 go get -u github.com/golang-jwt/jwt/v5
 go get -u golang.org/x/crypto/bcrypt
+
+# 依赖注入
+go get -u go.uber.org/fx
+
+# 配置管理
+go get -u github.com/spf13/viper
+
+# 工具库
+go get -u github.com/google/uuid
+
+# 测试依赖
+go get -u github.com/stretchr/testify
+go get -u gorm.io/driver/sqlite
 ```
 
 ---
@@ -100,22 +115,30 @@ go get -u golang.org/x/crypto/bcrypt
 backend/
 ├── cmd/
 │   └── server/
-│       └── main.go                 # 应用入口
+│       └── main.go                 # 应用入口（FX 应用启动）
 ├── internal/
+│   ├── app/
+│   │   └── app.go                  # FX 模块组装
 │   ├── config/
-│   │   └── config.go              # 配置管理
+│   │   └── config.go              # 配置管理（含 Module）
+│   ├── database/
+│   │   └── database.go            # 数据库模块（生命周期管理）
 │   ├── models/
 │   │   └── user.go                # User 模型
 │   ├── repository/
-│   │   └── user_repository.go     # 数据访问层
+│   │   └── user_repository.go     # 数据访问层（含 Module）
 │   ├── handler/
-│   │   └── auth_handler.go        # HTTP 处理器
+│   │   └── auth_handler.go        # HTTP 处理器（含 Module）
 │   ├── middleware/
 │   │   ├── cors.go                # CORS 中间件
 │   │   ├── auth.go                # JWT 认证中间件
 │   │   └── logger.go              # 日志中间件
 │   ├── service/
-│   │   └── auth_service.go        # 业务逻辑层
+│   │   └── auth_service.go        # 业务逻辑层（含 Module）
+│   ├── router/
+│   │   └── router.go              # 路由模块（含 Module）
+│   ├── server/
+│   │   └── server.go              # HTTP 服务器模块（生命周期管理）
 │   └── dto/
 │       ├── login_request.go       # 登录请求 DTO
 │       ├── register_request.go    # 注册请求 DTO
@@ -131,10 +154,10 @@ backend/
 │   └── response/
 │       └── response.go            # 统一响应格式
 ├── configs/
-│   ├── config.yaml                # 配置文件
-│   └── config.development.yaml    # 开发环境配置
+│   ├── config.yaml                # 基础配置文件（可选）
+│   ├── config.development.yaml    # 开发环境配置
+│   └── config.production.yaml     # 生产环境配置
 ├── .env.example                   # 环境变量示例
-├── .air.toml                      # Air 热重载配置
 ├── Dockerfile                     # Docker 镜像构建
 ├── docker-compose.yml             # Docker Compose 配置
 ├── go.mod
@@ -154,6 +177,117 @@ backend/
 ├─────────────────────────────────────────┤
 │         Database (PostgreSQL)           │  ← 数据持久化
 └─────────────────────────────────────────┘
+```
+
+### 3.3 FX 依赖注入架构
+
+本项目使用 **FX** 框架进行依赖注入，实现模块化设计和自动依赖管理。
+
+#### 3.3.1 FX 模块依赖关系
+
+```
+main (cmd/server/main.go)
+  └─ app.Module (internal/app/app.go)
+      ├─ config.Module
+      │   └─ *config.Config
+      ├─ database.Module
+      │   ├─ *gorm.DB (依赖: *config.Config)
+      │   └─ Lifecycle Hooks (OnStart/OnStop)
+      ├─ jwt.Module (pkg/jwt/)
+      │   └─ *jwt.Manager (依赖: *config.Config)
+      ├─ repository.Module
+      │   └─ repository.UserRepository (依赖: *gorm.DB)
+      ├─ service.Module
+      │   └─ service.AuthService (依赖: UserRepository, *jwt.Manager)
+      ├─ handler.Module
+      │   └─ *handler.AuthHandler (依赖: service.AuthService)
+      ├─ router.Module
+      │   └─ *gin.Engine (依赖: *AuthHandler, *jwt.Manager, *config.Config)
+      └─ server.Module
+          ├─ *http.Server (依赖: *gin.Engine, *config.Config)
+          └─ Lifecycle Hooks (OnStart: 启动服务器, OnStop: 优雅关闭)
+```
+
+#### 3.3.2 FX 核心概念
+
+**1. fx.Provide** - 提供依赖（构造函数）
+```go
+fx.Provide(
+    config.Load,           // 提供 *config.Config
+    database.NewDB,        // 提供 *gorm.DB
+    service.NewAuthService, // 提供 service.AuthService
+)
+```
+
+**2. fx.Invoke** - 启动时调用
+```go
+fx.Invoke(server.RegisterHooks)  // 注册生命周期钩子
+```
+
+**3. fx.Lifecycle** - 生命周期管理
+```go
+func RegisterHooks(lc fx.Lifecycle, db *gorm.DB) {
+    lc.Append(fx.Hook{
+        OnStart: func(ctx context.Context) error {
+            // 启动时的操作
+        },
+        OnStop: func(ctx context.Context) error {
+            // 停止时的操作
+        },
+    })
+}
+```
+
+**4. fx.In / fx.Out** - 声明依赖组
+```go
+type RouterIn struct {
+    fx.In
+    AuthHandler *handler.AuthHandler
+    JWTManager  *jwt.Manager
+    Config      *config.Config
+}
+```
+
+#### 3.3.3 模块化设计
+
+每个包都提供一个 `Module()` 函数，返回 `fx.Option`：
+
+```go
+// internal/database/database.go
+package database
+
+func Module() fx.Option {
+    return fx.Options(
+        fx.Provide(NewDB),
+        fx.Invoke(RegisterHooks),
+    )
+}
+
+// internal/service/auth_service.go
+package service
+
+func Module() fx.Option {
+    return fx.Provide(
+        NewAuthService,
+    )
+}
+```
+
+主应用在 `internal/app/app.go` 中组装所有模块：
+
+```go
+func Module() fx.Option {
+    return fx.Options(
+        config.Module,
+        database.Module,
+        jwt.Module,
+        repository.Module,
+        service.Module,
+        handler.Module,
+        router.Module,
+        server.Module,
+    )
+}
 ```
 
 ---
@@ -455,99 +589,146 @@ Authorization: Bearer {token}
 
 **文件**: `internal/config/config.go`
 
+本项目使用 **Viper** 进行配置管理，支持多种配置源：
+- **配置文件**（YAML 格式）
+- **环境变量**
+- **默认值**
+
+配置优先级（从高到低）：
+1. 环境变量
+2. 配置文件（`configs/config.{APP_ENV}.yaml`）
+3. 默认值（代码中硬编码）
+
 ```go
 package config
 
 import (
 	"fmt"
+	"log"
 	"os"
+	"strings"
 	"time"
 
-	"github.com/joho/godotenv"
+	"github.com/spf13/viper"
+	"go.uber.org/fx"
 )
 
 type Config struct {
-	Server   ServerConfig
-	Database DatabaseConfig
-	JWT      JWTConfig
-	CORS     CORSConfig
+	Server   ServerConfig   `mapstructure:"server"`
+	Database DatabaseConfig `mapstructure:"database"`
+	JWT      JWTConfig      `mapstructure:"jwt"`
+	CORS     CORSConfig     `mapstructure:"cors"`
 }
 
 type ServerConfig struct {
-	Port            string
-	Mode            string // debug, release
-	ReadTimeout     time.Duration
-	WriteTimeout    time.Duration
-	ShutdownTimeout time.Duration
+	Port            string        `mapstructure:"port"`
+	Mode            string        `mapstructure:"mode"`             // debug, release, test
+	ReadTimeout     time.Duration `mapstructure:"readTimeout"`
+	WriteTimeout    time.Duration `mapstructure:"writeTimeout"`
+	ShutdownTimeout time.Duration `mapstructure:"shutdownTimeout"`
 }
 
 type DatabaseConfig struct {
-	Host     string
-	Port     string
-	User     string
-	Password string
-	DBName   string
-	SSLMode  string
+	Host     string `mapstructure:"host"`
+	Port     string `mapstructure:"port"`
+	User     string `mapstructure:"user"`
+	Password string `mapstructure:"password"`
+	DBName   string `mapstructure:"dbName"`
+	SSLMode  string `mapstructure:"sslMode"`
 }
 
 type JWTConfig struct {
-	Secret          string
-	AccessDuration  time.Duration
-	RefreshDuration time.Duration
-	Issuer          string
+	Secret          string        `mapstructure:"secret"`
+	AccessDuration  time.Duration `mapstructure:"accessDuration"`
+	RefreshDuration time.Duration `mapstructure:"refreshDuration"`
+	Issuer          string        `mapstructure:"issuer"`
 }
 
 type CORSConfig struct {
-	AllowedOrigins []string
-	AllowedMethods []string
-	AllowedHeaders []string
+	AllowedOrigins []string `mapstructure:"allowedOrigins"`
+	AllowedMethods []string `mapstructure:"allowedMethods"`
+	AllowedHeaders []string `mapstructure:"allowedHeaders"`
 }
 
+// Load 加载配置
 func Load() (*Config, error) {
-	// 加载 .env 文件（开发环境）
-	if os.Getenv("APP_ENV") != "production" {
-		if err := godotenv.Load(); err != nil {
-			return nil, fmt.Errorf("error loading .env file: %w", err)
+	v := viper.New()
+
+	// 1. 设置默认值
+	setDefaults(v)
+
+	// 2. 配置文件路径和名称
+	// 根据环境变量 APP_ENV 选择配置文件（development, production）
+	env := os.Getenv("APP_ENV")
+	if env == "" {
+		env = "development"
+	}
+
+	v.SetConfigName("config." + env)
+	v.SetConfigType("yaml")
+	v.AddConfigPath("./configs")
+	v.AddConfigPath(".")
+
+	// 3. 读取配置文件（可选，不存在不报错）
+	if err := v.ReadInConfig(); err != nil {
+		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
+			return nil, fmt.Errorf("failed to read config file: %w", err)
 		}
+		log.Println("No config file found, using defaults and environment variables")
+	} else {
+		log.Printf("Using config file: %s", v.ConfigFileUsed())
 	}
 
-	cfg := &Config{
-		Server: ServerConfig{
-			Port:            getEnv("SERVER_PORT", "8080"),
-			Mode:            getEnv("SERVER_MODE", "debug"),
-			ReadTimeout:     15 * time.Second,
-			WriteTimeout:    15 * time.Second,
-			ShutdownTimeout: 10 * time.Second,
-		},
-		Database: DatabaseConfig{
-			Host:     getEnv("DB_HOST", "localhost"),
-			Port:     getEnv("DB_PORT", "5432"),
-			User:     getEnv("DB_USER", "artisan"),
-			Password: getEnv("DB_PASSWORD", "artisan123"),
-			DBName:   getEnv("DB_NAME", "artisan_coder"),
-			SSLMode:  getEnv("DB_SSLMODE", "disable"),
-		},
-		JWT: JWTConfig{
-			Secret:          getEnv("JWT_SECRET", "your-secret-key-change-in-production"),
-			AccessDuration:  1 * time.Hour,
-			RefreshDuration: 7 * 24 * time.Hour, // 7 days
-			Issuer:          "artisan-coder",
-		},
-		CORS: CORSConfig{
-			AllowedOrigins: []string{getEnv("FRONTEND_URL", "http://localhost:5173")},
-			AllowedMethods: []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
-			AllowedHeaders: []string{"Origin", "Content-Type", "Authorization"},
-		},
+	// 4. 绑定环境变量
+	// 环境变量可以覆盖配置文件
+	// 例如：SERVER_PORT -> server.port
+	//       DB_HOST -> database.host
+	v.AutomaticEnv()
+	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+
+	// 5. 解析到结构体
+	var cfg Config
+	if err := v.Unmarshal(&cfg); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
 	}
 
-	return cfg, nil
+	return &cfg, nil
 }
 
-func getEnv(key, fallback string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
-	}
-	return fallback
+// setDefaults 设置默认配置值
+func setDefaults(v *viper.Viper) {
+	// Server defaults
+	v.SetDefault("server.port", "8080")
+	v.SetDefault("server.mode", "debug")
+	v.SetDefault("server.readTimeout", "15s")
+	v.SetDefault("server.writeTimeout", "15s")
+	v.SetDefault("server.shutdownTimeout", "10s")
+
+	// Database defaults
+	v.SetDefault("database.host", "localhost")
+	v.SetDefault("database.port", "5432")
+	v.SetDefault("database.user", "artisan")
+	v.SetDefault("database.password", "artisan123")
+	v.SetDefault("database.dbName", "artisan_coder")
+	v.SetDefault("database.sslMode", "disable")
+
+	// JWT defaults
+	v.SetDefault("jwt.secret", "your-secret-key-change-in-production")
+	v.SetDefault("jwt.accessDuration", "1h")
+	v.SetDefault("jwt.refreshDuration", "168h") // 7 days
+	v.SetDefault("jwt.issuer", "artisan-coder")
+
+	// CORS defaults
+	v.SetDefault("cors.allowedOrigins", []string{"http://localhost:5173"})
+	v.SetDefault("cors.allowedMethods", []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"})
+	v.SetDefault("cors.allowedHeaders", []string{"Origin", "Content-Type", "Authorization"})
+}
+
+// Module 返回配置模块的 FX 选项
+func Module() fx.Option {
+	return fx.Provide(
+		Load,
+	)
 }
 ```
 
@@ -922,8 +1103,8 @@ func Auth(jwtManager *jwt.Manager) gin.HandlerFunc {
 			return
 		}
 
-		// 将用户 ID 存储到上下文
-		c.Set(userIDKey, claims.UserID)
+		// 将用户 ID 存储到上下文（存储为字符串）
+		c.Set(userIDKey, claims.UserID.String())
 		c.Next()
 	}
 }
@@ -935,6 +1116,43 @@ func GetUserID(c *gin.Context) (string, bool) {
 		return "", false
 	}
 	return userID.(string), true
+}
+```
+
+#### 日志中间件
+
+**文件**: `internal/middleware/logger.go`
+
+```go
+package middleware
+
+import (
+	"time"
+
+	"github.com/gin-gonic/gin"
+	"log"
+)
+
+func Logger() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		start := time.Now()
+		path := c.Request.URL.Path
+		query := c.Request.URL.RawQuery
+
+		c.Next()
+
+		end := time.Now()
+		latency := end.Sub(start)
+
+		log.Printf("[%s] %s %s | Status: %d | Latency: %v | IP: %s",
+			c.Request.Method,
+			path,
+			query,
+			c.Writer.Status(),
+			latency,
+			c.ClientIP(),
+		)
+	}
 }
 ```
 
@@ -951,6 +1169,7 @@ import (
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"artisan-coder/internal/models"
 )
 
 var (
@@ -959,11 +1178,11 @@ var (
 )
 
 type UserRepository interface {
-	Create(ctx context.Context, user *User) error
-	FindByEmail(ctx context.Context, email string) (*User, error)
-	FindByID(ctx context.Context, id uuid.UUID) (*User, error)
-	FindByUsername(ctx context.Context, username string) (*User, error)
-	Update(ctx context.Context, user *User) error
+	Create(ctx context.Context, user *models.User) error
+	FindByEmail(ctx context.Context, email string) (*models.User, error)
+	FindByID(ctx context.Context, id uuid.UUID) (*models.User, error)
+	FindByUsername(ctx context.Context, username string) (*models.User, error)
+	Update(ctx context.Context, user *models.User) error
 }
 
 type userRepository struct {
@@ -974,7 +1193,7 @@ func NewUserRepository(db *gorm.DB) UserRepository {
 	return &userRepository{db: db}
 }
 
-func (r *userRepository) Create(ctx context.Context, user *User) error {
+func (r *userRepository) Create(ctx context.Context, user *models.User) error {
 	result := r.db.WithContext(ctx).Create(user)
 	if result.Error != nil {
 		// 检查是否是唯一约束冲突
@@ -986,8 +1205,8 @@ func (r *userRepository) Create(ctx context.Context, user *User) error {
 	return nil
 }
 
-func (r *userRepository) FindByEmail(ctx context.Context, email string) (*User, error) {
-	var user User
+func (r *userRepository) FindByEmail(ctx context.Context, email string) (*models.User, error) {
+	var user models.User
 	result := r.db.WithContext(ctx).Where("email = ?", email).First(&user)
 	if result.Error != nil {
 		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
@@ -998,8 +1217,8 @@ func (r *userRepository) FindByEmail(ctx context.Context, email string) (*User, 
 	return &user, nil
 }
 
-func (r *userRepository) FindByID(ctx context.Context, id uuid.UUID) (*User, error) {
-	var user User
+func (r *userRepository) FindByID(ctx context.Context, id uuid.UUID) (*models.User, error) {
+	var user models.User
 	result := r.db.WithContext(ctx).Where("id = ?", id).First(&user)
 	if result.Error != nil {
 		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
@@ -1010,8 +1229,8 @@ func (r *userRepository) FindByID(ctx context.Context, id uuid.UUID) (*User, err
 	return &user, nil
 }
 
-func (r *userRepository) FindByUsername(ctx context.Context, username string) (*User, error) {
-	var user User
+func (r *userRepository) FindByUsername(ctx context.Context, username string) (*models.User, error) {
+	var user models.User
 	result := r.db.WithContext(ctx).Where("username = ?", username).First(&user)
 	if result.Error != nil {
 		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
@@ -1022,7 +1241,7 @@ func (r *userRepository) FindByUsername(ctx context.Context, username string) (*
 	return &user, nil
 }
 
-func (r *userRepository) Update(ctx context.Context, user *User) error {
+func (r *userRepository) Update(ctx context.Context, user *models.User) error {
 	result := r.db.WithContext(ctx).Save(user)
 	return result.Error
 }
@@ -1160,12 +1379,14 @@ func (s *authService) GetUserByID(ctx context.Context, userID uuid.UUID) (*model
 package handler
 
 import (
+	"errors"
 	"net/http"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"artisan-coder/internal/service"
+	"artisan-coder/internal/repository"
 	"artisan-coder/pkg/response"
 )
 
@@ -1223,7 +1444,7 @@ func (h *AuthHandler) Register(c *gin.Context) {
 	// 调用服务层
 	user, accessToken, refreshToken, err := h.authService.Register(c.Request.Context(), req.Username, req.Email, req.Password)
 	if err != nil {
-		if err.Error() == "user already exists" {
+		if errors.Is(err, repository.ErrUserAlreadyExists) {
 			response.Conflict(c, "User with this email already exists")
 		} else {
 			response.InternalError(c)
@@ -1317,7 +1538,7 @@ func (h *AuthHandler) GetCurrentUser(c *gin.Context) {
 	response.Success(c, toUserResponse(user))
 }
 
-func toUserResponse(user *User) *UserResponse {
+func toUserResponse(user *models.User) *UserResponse {
 	return &UserResponse{
 		ID:        user.ID.String(),
 		Username:  user.Username,
@@ -1330,107 +1551,137 @@ func toUserResponse(user *User) *UserResponse {
 
 ### 6.10 主程序
 
+使用 FX 后，主程序变得非常简洁，只负责启动 FX 应用。
+
 **文件**: `cmd/server/main.go`
 
 ```go
 package main
 
 import (
-	"context"
-	"fmt"
 	"log"
-	"net/http"
-	"os"
-	"os/signal"
-	"syscall"
-	"time"
 
-	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
-	"gorm.io/driver/postgres"
-	"gorm.io/gorm"
+	"go.uber.org/fx"
+	"artisan-coder/internal/app"
+)
+
+func main() {
+	// 创建并启动 FX 应用
+	app := fx.New(
+		app.Module(),
+		fx.PrintStackTrace(), // 打印启动时的错误堆栈
+	)
+
+	// 运行应用（如果启动失败会自动处理）
+	if err := app.Start(nil); err != nil {
+		log.Fatal(err)
+	}
+
+	// 等待应用退出（处理信号和优雅关闭）
+	app.Stop(nil)
+}
+```
+
+**说明**：
+- `fx.New()` 创建 FX 应用实例
+- `app.Module()` 组装所有模块（详见 6.11 节）
+- `fx.PrintStackTrace()` 用于打印启动错误
+- `app.Start(nil)` 启动应用（参数为 context.Context）
+- `app.Stop(nil)` 停止应用（处理信号和优雅关闭）
+
+### 6.11 FX 模块设计
+
+本节详细介绍各模块的 FX 实现细节。
+
+#### 6.11.1 应用模块 (internal/app/app.go)
+
+应用模块负责组装所有子模块。
+
+```go
+package app
+
+import (
+	"go.uber.org/fx"
 
 	"artisan-coder/internal/config"
+	"artisan-coder/internal/database"
 	"artisan-coder/internal/handler"
-	"artisan-coder/internal/middleware"
-	"artisan-coder/internal/models"
 	"artisan-coder/internal/repository"
+	"artisan-coder/internal/router"
+	"artisan-coder/internal/server"
 	"artisan-coder/internal/service"
 	"artisan-coder/pkg/jwt"
 )
 
-func main() {
-	// 加载配置
-	cfg, err := config.Load()
-	if err != nil {
-		log.Fatalf("Failed to load config: %v", err)
-	}
+// Module 返回 FX 应用模块
+func Module() fx.Option {
+	return fx.Options(
+		// 基础模块
+		config.Module,
 
-	// 初始化数据库
-	db, err := initDB(cfg)
-	if err != nil {
-		log.Fatalf("Failed to initialize database: %v", err)
-	}
+		// 数据层
+		database.Module,
+		jwt.Module,
 
-	// 初始化依赖
-	jwtManager := jwt.NewManager(
-		cfg.JWT.Secret,
-		cfg.JWT.AccessDuration,
-		cfg.JWT.RefreshDuration,
-		cfg.JWT.Issuer,
+		// 业务层
+		repository.Module,
+		service.Module,
+
+		// HTTP 层
+		handler.Module,
+		router.Module,
+
+		// 服务器层
+		server.Module,
 	)
+}
+```
 
-	userRepo := repository.NewUserRepository(db)
-	authService := service.NewAuthService(userRepo, jwtManager)
-	authHandler := handler.NewAuthHandler(authService)
+#### 6.11.2 配置模块 (internal/config/config.go)
 
-	// 设置 Gin 模式
-	gin.SetMode(cfg.Server.Mode)
+配置模块需要添加 `Module()` 函数。
 
-	// 创建路由
-	router := gin.Default()
+```go
+// Module 返回配置模块的 FX 选项
+func Module() fx.Option {
+	return fx.Provide(
+		Load,
+	)
+}
+```
 
-	// 全局中间件
-	router.Use(middleware.CORS(cfg.CORS.AllowedOrigins))
-	router.Use(middleware.Logger())
+**说明**：配置模块只需要提供 `Load()` 函数，FX 会自动调用它并缓存结果。
 
-	// 注册路由
-	setupRoutes(router, authHandler, jwtManager)
+#### 6.11.3 数据库模块 (internal/database/database.go)
 
-	// 创建 HTTP 服务器
-	srv := &http.Server{
-		Addr:         ":" + cfg.Server.Port,
-		Handler:      router,
-		ReadTimeout:  cfg.Server.ReadTimeout,
-		WriteTimeout: cfg.Server.WriteTimeout,
-	}
+数据库模块负责数据库连接的生命周期管理。
 
-	// 启动服务器
-	go func() {
-		log.Printf("Server is running on port %s", cfg.Server.Port)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Failed to start server: %v", err)
-		}
-	}()
+```go
+package database
 
-	// 优雅关闭
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
+import (
+	"context"
+	"fmt"
+	"log"
 
-	log.Println("Shutting down server...")
+	"go.uber.org/fx"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
 
-	ctx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownTimeout)
-	defer cancel()
+	"artisan-coder/internal/config"
+	"artisan-coder/internal/models"
+)
 
-	if err := srv.Shutdown(ctx); err != nil {
-		log.Fatalf("Server forced to shutdown: %v", err)
-	}
-
-	log.Println("Server exited")
+// Module 返回数据库模块的 FX 选项
+func Module() fx.Option {
+	return fx.Options(
+		fx.Provide(NewDB),
+		fx.Invoke(RegisterHooks),
+	)
 }
 
-func initDB(cfg *config.Config) (*gorm.DB, error) {
+// NewDB 创建数据库连接
+func NewDB(cfg *config.Config) (*gorm.DB, error) {
 	dsn := fmt.Sprintf(
 		"host=%s port=%s user=%s password=%s dbname=%s sslmode=%s",
 		cfg.Database.Host,
@@ -1443,20 +1694,172 @@ func initDB(cfg *config.Config) (*gorm.DB, error) {
 
 	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to connect database: %w", err)
 	}
+
+	log.Println("Database connected successfully")
 
 	// 自动迁移（开发环境）
 	// 生产环境应使用 golang-migrate
-	if os.Getenv("APP_ENV") != "production" {
+	if cfg.Server.Mode == "debug" {
 		if err := db.AutoMigrate(&models.User{}); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to auto migrate: %w", err)
 		}
+		log.Println("Database auto migration completed")
 	}
 
 	return db, nil
 }
 
+// RegisterHooks 注册数据库生命周期钩子
+func RegisterHooks(lc fx.Lifecycle, db *gorm.DB) {
+	lc.Append(fx.Hook{
+		OnStart: func(ctx context.Context) error {
+			log.Println("Starting database connection...")
+			// GORM v2 自动连接，无需额外操作
+			return nil
+		},
+		OnStop: func(ctx context.Context) error {
+			log.Println("Closing database connection...")
+			sqlDB, err := db.DB()
+			if err != nil {
+				return err
+			}
+			return sqlDB.Close()
+		},
+	})
+}
+```
+
+#### 6.11.4 JWT 模块 (pkg/jwt/jwt.go)
+
+JWT 模块需要添加 `Module()` 函数。
+
+```go
+// Module 返回 JWT 模块的 FX 选项
+func Module() fx.Option {
+	return fx.Provide(
+		NewManager,
+	)
+}
+
+// NewManager 创建 JWT Manager（需要修改构造函数）
+func NewManager(cfg *config.Config) *Manager {
+	return NewManagerWithConfig(
+		cfg.JWT.Secret,
+		cfg.JWT.AccessDuration,
+		cfg.JWT.RefreshDuration,
+		cfg.JWT.Issuer,
+	)
+}
+
+// NewManagerWithConfig 使用具体参数创建 Manager（原构造函数重命名）
+func NewManagerWithConfig(secret string, accessDuration, refreshDuration time.Duration, issuer string) *Manager {
+	return &Manager{
+		secret:          []byte(secret),
+		accessDuration:  accessDuration,
+		refreshDuration: refreshDuration,
+		issuer:          issuer,
+	}
+}
+```
+
+**说明**：需要添加 `NewManager(cfg *config.Config)` 构造函数以支持依赖注入。
+
+#### 6.11.5 Repository 模块 (internal/repository/user_repository.go)
+
+Repository 模块需要添加 `Module()` 函数。
+
+```go
+// Module 返回 Repository 模块的 FX 选项
+func Module() fx.Option {
+	return fx.Provide(
+		NewUserRepository,
+	)
+}
+```
+
+**说明**：Repository 的构造函数已经是 `NewUserRepository(db *gorm.DB)`，FX 会自动注入 `*gorm.DB`。
+
+#### 6.11.6 Service 模块 (internal/service/auth_service.go)
+
+Service 模块需要添加 `Module()` 函数。
+
+```go
+// Module 返回 Service 模块的 FX 选项
+func Module() fx.Option {
+	return fx.Provide(
+		NewAuthService,
+	)
+}
+```
+
+**说明**：Service 的构造函数接收多个依赖，FX 会自动注入所有依赖。
+
+#### 6.11.7 Handler 模块 (internal/handler/auth_handler.go)
+
+Handler 模块需要添加 `Module()` 函数。
+
+```go
+// Module 返回 Handler 模块的 FX 选项
+func Module() fx.Option {
+	return fx.Provide(
+		NewAuthHandler,
+	)
+}
+```
+
+#### 6.11.8 路由模块 (internal/router/router.go)
+
+路由模块负责组装 Gin 路由。
+
+```go
+package router
+
+import (
+	"go.uber.org/fx"
+	"github.com/gin-gonic/gin"
+
+	"artisan-coder/internal/config"
+	"artisan-coder/internal/handler"
+	"artisan-coder/internal/middleware"
+	"artisan-coder/pkg/jwt"
+)
+
+// Module 返回路由模块的 FX 选项
+func Module() fx.Option {
+	return fx.Provide(
+		NewRouter,
+	)
+}
+
+// RouterIn 路由模块的依赖组
+type RouterIn struct {
+	fx.In
+	AuthHandler *handler.AuthHandler
+	JWTManager  *jwt.Manager
+	Config      *config.Config
+}
+
+// NewRouter 创建 Gin 路由
+func NewRouter(in RouterIn) *gin.Engine {
+	// 设置 Gin 模式
+	gin.SetMode(in.Config.Server.Mode)
+
+	router := gin.New()
+
+	// 全局中间件
+	router.Use(middleware.CORS(in.Config.CORS.AllowedOrigins))
+	router.Use(middleware.Logger())
+	router.Use(gin.Recovery())
+
+	// 注册路由
+	setupRoutes(router, in.AuthHandler, in.JWTManager)
+
+	return router
+}
+
+// setupRoutes 配置所有路由
 func setupRoutes(router *gin.Engine, authHandler *handler.AuthHandler, jwtManager *jwt.Manager) {
 	api := router.Group("/api")
 	{
@@ -1471,6 +1874,72 @@ func setupRoutes(router *gin.Engine, authHandler *handler.AuthHandler, jwtManage
 			auth.GET("/me", middleware.Auth(jwtManager), authHandler.GetCurrentUser)
 		}
 	}
+}
+```
+
+#### 6.11.9 服务器模块 (internal/server/server.go)
+
+服务器模块负责 HTTP 服务器的生命周期管理。
+
+```go
+package server
+
+import (
+	"context"
+	"log"
+	"net/http"
+
+	"go.uber.org/fx"
+	"github.com/gin-gonic/gin"
+
+	"artisan-coder/internal/config"
+)
+
+// Module 返回服务器模块的 FX 选项
+func Module() fx.Option {
+	return fx.Options(
+		fx.Provide(NewServer),
+		fx.Invoke(RegisterHooks),
+	)
+}
+
+// ServerIn 服务器模块的依赖组
+type ServerIn struct {
+	fx.In
+	Router  *gin.Engine
+	Config  *config.Config
+}
+
+// NewServer 创建 HTTP 服务器
+func NewServer(in ServerIn) *http.Server {
+	return &http.Server{
+		Addr:         ":" + in.Config.Server.Port,
+		Handler:      in.Router,
+		ReadTimeout:  in.Config.Server.ReadTimeout,
+		WriteTimeout: in.Config.Server.WriteTimeout,
+	}
+}
+
+// RegisterHooks 注册服务器生命周期钩子
+func RegisterHooks(lc fx.Lifecycle, server *http.Server, cfg *config.Config) {
+	lc.Append(fx.Hook{
+		OnStart: func(ctx context.Context) error {
+			log.Printf("Starting HTTP server on port %s", cfg.Server.Port)
+
+			// 在 goroutine 中启动服务器
+			go func() {
+				if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+					log.Fatalf("HTTP server failed: %v", err)
+				}
+			}()
+
+			return nil
+		},
+		OnStop: func(ctx context.Context) error {
+			log.Println("Shutting down HTTP server...")
+			return server.Shutdown(ctx)
+		},
+	})
 }
 ```
 
@@ -1489,7 +1958,7 @@ func setupRoutes(router *gin.Engine, authHandler *handler.AuthHandler, jwtManage
 | 2.5 | 业务逻辑层 | P0 |
 | 2.6 | HTTP 层 | P0 |
 | 2.7 | 中间件实现 | P0 |
-| 2.8 | 主程序和路由 | P0 |
+| 2.8 | FX 依赖注入 | P0 |
 | 2.9 | 测试 | P1 |
 | 2.10 | Docker 部署 | P1 |
 
@@ -1501,16 +1970,131 @@ func setupRoutes(router *gin.Engine, authHandler *handler.AuthHandler, jwtManage
 - [ ] 创建 `backend/` 目录
 - [ ] 初始化 Go module: `go mod init artisan-coder`
 - [ ] 创建项目目录结构
+- [ ] 创建 `configs/` 目录和配置文件
 - [ ] 创建 `.env.example` 文件
+- [ ] 安装核心依赖
+- [ ] 安装 FX 依赖注入框架
+- [ ] 安装 Viper 配置管理库
+
+**安装依赖**:
+```bash
+# 核心依赖
+go get -u github.com/gin-gonic/gin
+go get -u gorm.io/gorm
+go get -u gorm.io/driver/postgres
+go get -u github.com/golang-jwt/jwt/v5
+go get -u golang.org/x/crypto/bcrypt
+
+# 依赖注入
+go get -u go.uber.org/fx
+
+# 配置管理
+go get -u github.com/spf13/viper
+
+# 工具库
+go get -u github.com/google/uuid
+
+# 测试依赖
+go get -u github.com/stretchr/testify
+go get -u gorm.io/driver/sqlite
+```
+
+**配置文件**: `configs/config.development.yaml`
+
+创建开发环境配置文件：
+
+```yaml
+server:
+  port: "8080"
+  mode: "debug"  # debug 模式会打印详细日志
+  readTimeout: 15s
+  writeTimeout: 15s
+  shutdownTimeout: 10s
+
+database:
+  host: "localhost"
+  port: "5432"
+  user: "artisan"
+  password: "artisan123"
+  dbName: "artisan_coder"
+  sslMode: "disable"
+
+jwt:
+  secret: "development-secret-key-do-not-use-in-production"
+  accessDuration: "1h"      # 1 hour
+  refreshDuration: "168h"   # 7 days
+  issuer: "artisan-coder"
+
+cors:
+  allowedOrigins:
+    - "http://localhost:5173"
+    - "http://localhost:3000"
+  allowedMethods:
+    - "GET"
+    - "POST"
+    - "PUT"
+    - "DELETE"
+    - "OPTIONS"
+  allowedHeaders:
+    - "Origin"
+    - "Content-Type"
+    - "Authorization"
+```
+
+**配置文件**: `configs/config.production.yaml`
+
+创建生产环境配置文件：
+
+```yaml
+server:
+  port: "8080"
+  mode: "release"
+  readTimeout: 15s
+  writeTimeout: 15s
+  shutdownTimeout: 30s
+
+database:
+  host: ""  # 从环境变量读取
+  port: "5432"
+  user: ""  # 从环境变量读取
+  password: ""  # 从环境变量读取
+  dbName: ""  # 从环境变量读取
+  sslMode: "require"
+
+jwt:
+  secret: ""  # 必须从环境变量设置
+  accessDuration: "1h"
+  refreshDuration: "168h"
+  issuer: "artisan-coder"
+
+cors:
+  allowedOrigins:
+    - ""  # 从环境变量读取
+  allowedMethods:
+    - "GET"
+    - "POST"
+    - "PUT"
+    - "DELETE"
+    - "OPTIONS"
+  allowedHeaders:
+    - "Origin"
+    - "Content-Type"
+    - "Authorization"
+```
 
 **环境变量示例**: `.env.example`
 
 ```bash
-# Server
-SERVER_PORT=8080
-SERVER_MODE=debug
+# 应用环境（development, production）
+# 决定加载哪个配置文件：config.development.yaml 或 config.production.yaml
+APP_ENV=development
 
-# Database
+# ===== Server 配置 =====
+# 服务器监听端口（会覆盖配置文件中的 server.port）
+SERVER_PORT=8080
+
+# ===== 数据库配置 =====
+# 数据库连接配置（会覆盖配置文件中的 database.* 设置）
 DB_HOST=localhost
 DB_PORT=5432
 DB_USER=artisan
@@ -1518,15 +2102,27 @@ DB_PASSWORD=artisan123
 DB_NAME=artisan_coder
 DB_SSLMODE=disable
 
-# JWT
+# ===== JWT 配置 =====
+# JWT 密钥（生产环境必须设置强密钥！）
+# 生成方法：openssl rand -base64 32
 JWT_SECRET=your-secret-key-change-in-production-use-openssl-rand-base64-32
 
-# CORS
+# ===== CORS 配置 =====
+# 允许的前端源
 FRONTEND_URL=http://localhost:5173
-
-# App
-APP_ENV=development
 ```
+
+**配置说明**：
+
+配置加载优先级（从高到低）：
+1. **环境变量**（最高优先级）- 适合容器化部署
+2. **配置文件**（`configs/config.{APP_ENV}.yaml`）- 适合传统部署
+3. **默认值**（代码中硬编码）- 确保配置总是有效
+
+**使用场景**：
+- **开发环境**：主要使用 `config.development.yaml`，敏感信息可以使用 `.env` 文件覆盖
+- **生产环境**：使用 `config.production.yaml` + 环境变量（敏感信息通过环境变量注入）
+- **容器环境**（Docker/Kubernetes）：通过环境变量覆盖配置文件
 
 ---
 
@@ -1631,19 +2227,75 @@ docker run --name artisan-postgres \
 
 ---
 
-#### 2.8 主程序和路由
+#### 2.8 FX 依赖注入
 
 **任务**:
-- [ ] 实现 `cmd/server/main.go` - 主程序入口
-- [ ] 配置路由组 (`/api/auth`)
-- [ ] 实现优雅关闭
-- [ ] 实现数据库连接初始化
-- [ ] 实现依赖注入
+- [ ] 为每个包添加 `Module()` 函数
+- [ ] 实现 `internal/database/database.go` - 数据库模块（含生命周期）
+- [ ] 实现 `internal/router/router.go` - 路由模块
+- [ ] 实现 `internal/server/server.go` - HTTP 服务器模块（含生命周期）
+- [ ] 实现 `internal/app/app.go` - FX 应用组装
+- [ ] 实现 `cmd/server/main.go` - 主程序入口（使用 FX）
+- [ ] 为每个构造函数添加 FX 依赖支持
+- [ ] 添加生命周期钩子（数据库、HTTP 服务器）
+
+**详细说明**:
+
+**配置模块**:
+- [ ] 在 `internal/config/config.go` 添加 `Module()` 函数
+```go
+func Module() fx.Option {
+    return fx.Provide(Load)
+}
+```
+
+**数据库模块**:
+- [ ] 创建 `internal/database/database.go`
+- [ ] 实现 `NewDB(cfg *config.Config) (*gorm.DB, error)`
+- [ ] 实现 `RegisterHooks(lc fx.Lifecycle, db *gorm.DB)` 生命周期钩子
+- [ ] 添加 `Module()` 函数
+
+**JWT 模块**:
+- [ ] 在 `pkg/jwt/jwt.go` 添加 `Module()` 函数
+- [ ] 添加 `NewManager(cfg *config.Config) *Manager` 构造函数
+
+**Repository 模块**:
+- [ ] 在 `internal/repository/user_repository.go` 添加 `Module()` 函数
+
+**Service 模块**:
+- [ ] 在 `internal/service/auth_service.go` 添加 `Module()` 函数
+
+**Handler 模块**:
+- [ ] 在 `internal/handler/auth_handler.go` 添加 `Module()` 函数
+
+**路由模块**:
+- [ ] 创建 `internal/router/router.go`
+- [ ] 实现 `RouterIn` 依赖组（使用 `fx.In`）
+- [ ] 实现 `NewRouter(in RouterIn) *gin.Engine`
+- [ ] 实现 `setupRoutes()` 函数
+- [ ] 添加 `Module()` 函数
+
+**服务器模块**:
+- [ ] 创建 `internal/server/server.go`
+- [ ] 实现 `ServerIn` 依赖组（使用 `fx.In`）
+- [ ] 实现 `NewServer(in ServerIn) *http.Server`
+- [ ] 实现 `RegisterHooks(lc fx.Lifecycle, server *http.Server, cfg *config.Config)` 生命周期钩子
+- [ ] 添加 `Module()` 函数
+
+**应用模块**:
+- [ ] 创建 `internal/app/app.go`
+- [ ] 实现 `Module()` 函数，组装所有子模块
+
+**主程序**:
+- [ ] 重写 `cmd/server/main.go`，使用 FX 启动应用
 
 **验证**:
-- 服务器可以正常启动
-- 所有路由可以正常访问
-- 服务器可以优雅关闭
+- 应用可以正常启动
+- 依赖自动注入成功
+- 生命周期钩子正确执行
+- 数据库连接在应用启动时建立，关闭时释放
+- HTTP 服务器在应用启动时启动，关闭时优雅退出
+- SIGTERM/SIGINT 信号触发优雅关闭
 
 ---
 
@@ -1714,8 +2366,8 @@ func TestUserRepository_Create(t *testing.T) {
 	repo := repository.NewUserRepository(db)
 
 	user := &models.User{
-		Username: "testuser",
-		Email:    "test@example.com",
+		Username:     "testuser",
+		Email:        "test@example.com",
 		PasswordHash: "hashed_password",
 	}
 
@@ -1730,8 +2382,8 @@ func TestUserRepository_FindByEmail(t *testing.T) {
 
 	// 创建测试用户
 	user := &models.User{
-		Username: "testuser",
-		Email:    "test@example.com",
+		Username:     "testuser",
+		Email:        "test@example.com",
 		PasswordHash: "hashed_password",
 	}
 	err := repo.Create(context.Background(), user)
@@ -1759,6 +2411,7 @@ package service_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1835,15 +2488,60 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"artisan-coder/cmd/server"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
+
+	"artisan-coder/internal/handler"
+	"artisan-coder/internal/middleware"
+	"artisan-coder/internal/models"
+	"artisan-coder/internal/repository"
+	"artisan-coder/internal/service"
+	"artisan-coder/pkg/jwt"
 )
+
+func setupRouter(t *testing.T) *gin.Engine {
+	// 使用内存数据库
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+
+	// 自动迁移
+	db.AutoMigrate(&models.User{})
+
+	// 初始化依赖
+	jwtManager := jwt.NewManager("test-secret", time.Hour, 7*24*time.Hour, "test")
+	userRepo := repository.NewUserRepository(db)
+	authService := service.NewAuthService(userRepo, jwtManager)
+	authHandler := handler.NewAuthHandler(authService)
+
+	// 设置 Gin
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.Use(middleware.CORS([]string{"*"}))
+
+	// 设置路由
+	api := router.Group("/api")
+	{
+		auth := api.Group("/auth")
+		{
+			auth.POST("/register", authHandler.Register)
+			auth.POST("/login", authHandler.Login)
+			auth.POST("/logout", authHandler.Logout)
+			auth.POST("/refresh", authHandler.RefreshToken)
+			auth.GET("/me", middleware.Auth(jwtManager), authHandler.GetCurrentUser)
+		}
+	}
+
+	return router
+}
 
 func TestAuthAPI_Register(t *testing.T) {
 	// 启动测试服务器
-	router := setupRouter() // 需要实现
+	router := setupRouter(t)
 
 	reqBody := map[string]string{
 		"username":        "testuser",
@@ -1874,7 +2572,7 @@ func TestAuthAPI_Register(t *testing.T) {
 }
 
 func TestAuthAPI_Login(t *testing.T) {
-	router := setupRouter()
+	router := setupRouter(t)
 
 	// 先注册
 	reqBody := map[string]string{
@@ -1912,6 +2610,210 @@ func TestAuthAPI_Login(t *testing.T) {
 	assert.NotNil(t, resp["data"])
 }
 ```
+
+#### 8.2.1 使用 FX 的集成测试
+
+FX 让测试变得更加简单，可以自动管理依赖注入和生命周期。
+
+**文件**: `test/integration/auth_fx_test.go`
+
+```go
+package integration_test
+
+import (
+	"context"
+	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/fx"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
+
+	"artisan-coder/internal/config"
+	"artisan-coder/internal/database"
+	"artisan-coder/internal/handler"
+	"artisan-coder/internal/models"
+	"artisan-coder/internal/repository"
+	"artisan-coder/internal/router"
+	"artisan-coder/internal/service"
+	"artisan-coder/pkg/jwt"
+)
+
+// TestModule 提供测试依赖
+func TestModule() fx.Option {
+	return fx.Options(
+		// 测试配置
+		fx.Provide(func() *config.Config {
+			return &config.Config{
+				Server: config.ServerConfig{
+					Port:            "8080",
+					Mode:            "test",
+					ReadTimeout:     15 * time.Second,
+					WriteTimeout:    15 * time.Second,
+					ShutdownTimeout: 10 * time.Second,
+				},
+				Database: config.DatabaseConfig{
+					Host:     "",
+					Port:     "",
+					User:     "",
+					Password: "",
+					DBName:   "",
+					SSLMode:  "",
+				},
+				JWT: config.JWTConfig{
+					Secret:          "test-secret",
+					AccessDuration:  time.Hour,
+					RefreshDuration: 7 * 24 * time.Hour,
+					Issuer:          "test",
+				},
+				CORS: config.CORSConfig{
+					AllowedOrigins: []string{"*"},
+					AllowedMethods: []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+					AllowedHeaders: []string{"Origin", "Content-Type", "Authorization"},
+				},
+			}
+		}),
+
+		// 测试数据库（使用内存 SQLite）
+		fx.Provide(func() *gorm.DB {
+			db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+			require.NoError(nil, err)
+			db.AutoMigrate(&models.User{})
+			return db
+		}),
+
+		// 其他模块
+		jwt.Module,
+		repository.Module,
+		service.Module,
+		handler.Module,
+		router.Module,
+	)
+}
+
+func TestAuthServiceWithFX_Register(t *testing.T) {
+	// 创建 FX 测试应用
+	app := fx.New(
+		TestModule(),
+		fx.Invoke(func(authService service.AuthService) {
+			// 测试逻辑
+			user, accessToken, refreshToken, err := authService.Register(
+				context.Background(),
+				"testuser",
+				"test@example.com",
+				"password123",
+			)
+
+			assert.NoError(t, err)
+			assert.NotNil(t, user)
+			assert.NotEmpty(t, accessToken)
+			assert.NotEmpty(t, refreshToken)
+			assert.Equal(t, "testuser", user.Username)
+			assert.Equal(t, "test@example.com", user.Email)
+		}),
+	)
+
+	// 启动应用
+	ctx := context.Background()
+	if err := app.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// 停止应用
+	if err := app.Stop(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAuthServiceWithFX_Login(t *testing.T) {
+	app := fx.New(
+		TestModule(),
+		fx.Invoke(func(authService service.AuthService) {
+			ctx := context.Background()
+
+			// 先注册
+			_, _, _, err := authService.Register(ctx, "testuser", "test@example.com", "password123")
+			require.NoError(t, err)
+
+			// 测试登录 - 正确密码
+			user, accessToken, refreshToken, err := authService.Login(ctx, "test@example.com", "password123")
+			assert.NoError(t, err)
+			assert.NotNil(t, user)
+			assert.NotEmpty(t, accessToken)
+			assert.NotEmpty(t, refreshToken)
+
+			// 测试登录 - 错误密码
+			_, _, _, err = authService.Login(ctx, "test@example.com", "wrongpassword")
+			assert.Error(t, err)
+		}),
+	)
+
+	ctx := context.Background()
+	if err := app.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.Stop(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRouterWithFX(t *testing.T) {
+	app := fx.New(
+		TestModule(),
+		fx.Invoke(func(router *gin.Engine) {
+			// 测试注册 API
+			reqBody := map[string]string{
+				"username":        "testuser",
+				"email":           "test@example.com",
+				"password":        "password123",
+				"confirmPassword": "password123",
+			}
+			body, _ := json.Marshal(reqBody)
+
+			req := httptest.NewRequest("POST", "/api/auth/register", bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+
+			router.ServeHTTP(w, req)
+
+			assert.Equal(t, http.StatusCreated, w.Code)
+
+			var resp map[string]interface{}
+			err := json.Unmarshal(w.Body.Bytes(), &resp)
+			require.NoError(t, err)
+
+			assert.Equal(t, float64(0), resp["code"])
+			assert.Equal(t, "success", resp["message"])
+			data := resp["data"].(map[string]interface{})
+			assert.NotEmpty(t, data["token"])
+			assert.NotEmpty(t, data["refreshToken"])
+		}),
+	)
+
+	ctx := context.Background()
+	if err := app.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.Stop(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+```
+
+**说明**：
+- 使用 FX 可以自动注入所有依赖
+- 测试代码更加简洁，不需要手动构造依赖
+- 生命周期由 FX 自动管理
+- 可以使用 `fx.Invoke` 来执行测试逻辑
+
+---
 
 ### 8.3 API 测试
 
@@ -2355,37 +3257,6 @@ migrate -path migrations -database "postgres://artisan:artisan123@localhost:5432
 migrate -path migrations -database "postgres://artisan:artisan123@localhost:5432/artisan_coder?sslmode=disable" down 1
 ```
 
-### 11.3 开发工具
-
-**Air - 热重载工具**:
-
-**文件**: `.air.toml`
-
-```toml
-root = "."
-tmp_dir = "tmp"
-
-[build]
-cmd = "go build -o ./tmp/main ./cmd/server"
-bin = "tmp/main"
-include_ext = ["go"]
-exclude_dir = ["tmp", "vendor"]
-delay = 1000
-stop_on_error = true
-```
-
-**安装**:
-
-```bash
-go install github.com/cosmtrek/air@latest
-```
-
-**运行**:
-
-```bash
-air
-```
-
 ### 11.4 Swagger 文档
 
 **安装 swag**:
@@ -2433,7 +3304,355 @@ go build -o bin/server ./cmd/server
 ./bin/server
 ```
 
-### 11.6 错误处理最佳实践
+### 11.6 FX 最佳实践
+
+#### 11.6.1 基本原则
+
+1. **每个包提供一个 Module() 函数**
+   ```go
+   func Module() fx.Option {
+       return fx.Provide(NewXXX)
+   }
+   ```
+
+2. **构造函数参数即依赖声明**
+   ```go
+   // FX 会自动注入 *config.Config 和 *gorm.DB
+   func NewUserService(cfg *config.Config, db *gorm.DB) *UserService {
+       return &UserService{cfg: cfg, db: db}
+   }
+   ```
+
+3. **使用 fx.In/fx.Out 管理复杂依赖**
+   ```go
+   type ServiceIn struct {
+       fx.In
+       Config    *config.Config
+       DB        *gorm.DB
+       JWTMgr    *jwt.Manager
+   }
+   ```
+
+4. **使用生命周期钩子管理资源**
+   ```go
+   func RegisterHooks(lc fx.Lifecycle, db *gorm.DB) {
+       lc.Append(fx.Hook{
+           OnStart: func(ctx context.Context) error { ... },
+           OnStop:  func(ctx context.Context) error { ... },
+       })
+   }
+   ```
+
+#### 11.6.2 常见模式
+
+**模式 1: 简单依赖提供**
+```go
+func Module() fx.Option {
+    return fx.Provide(
+        NewConfig,
+        NewDB,
+        NewRepository,
+    )
+}
+```
+
+**模式 2: 生命周期管理**
+```go
+func Module() fx.Option {
+    return fx.Options(
+        fx.Provide(NewDB),
+        fx.Invoke(RegisterHooks),
+    )
+}
+
+func RegisterHooks(lc fx.Lifecycle, db *gorm.DB) {
+    lc.Append(fx.Hook{
+        OnStart: func(ctx context.Context) error {
+            log.Println("Connecting to database...")
+            return nil
+        },
+        OnStop: func(ctx context.Context) error {
+            log.Println("Closing database connection...")
+            sqlDB, _ := db.DB()
+            return sqlDB.Close()
+        },
+    })
+}
+```
+
+**模式 3: 依赖组（多个依赖）**
+```go
+type RouterIn struct {
+    fx.In
+    AuthHandler *handler.AuthHandler
+    UserHandler *handler.UserHandler
+    JWTMgr      *jwt.Manager
+    Config      *config.Config
+}
+
+func NewRouter(in RouterIn) *gin.Engine {
+    router := gin.New()
+    // 使用 in.AuthHandler, in.UserHandler 等
+    return router
+}
+```
+
+**模式 4: 命名依赖（多个同类型）**
+```go
+type DBOut struct {
+    fx.Out
+    WriteDB *gorm.DB `name:"write"`
+    ReadDB  *gorm.DB `name:"read"`
+}
+
+type ServiceIn struct {
+    fx.In
+    WriteDB *gorm.DB `name:"write"`
+    ReadDB  *gorm.DB `name:"read"`
+}
+```
+
+**模式 5: 可选依赖**
+```go
+type CacheIn struct {
+    fx.In
+    Cache *redis.Client `optional:"true"`
+}
+
+func NewService(in CacheIn) *Service {
+    svc := &Service{}
+    if in.Cache != nil {
+        svc.cache = in.Cache
+    }
+    return svc
+}
+```
+
+#### 11.6.3 调试技巧
+
+**1. 可视化依赖图**
+```bash
+# 安装 fxviz
+go install go.uber.org/fx/fxviz@latest
+
+# 生成依赖图
+fxviz graph . | dot -Tpng -o dep.png
+```
+
+**2. 打印启动日志**
+```go
+app := fx.New(
+    app.Module(),
+    fx.PrintStackTrace(),  // 打印启动错误
+)
+```
+
+**3. 使用 fx.Logger**
+```go
+import "go.uber.org/fx/fxlog"
+
+app := fx.New(
+    app.Module(),
+    fx.WithLogger(func() fxlog.Logger {
+        return fxlog.New(os.Stdout)
+    }),
+)
+```
+
+**4. 验证依赖注入**
+```go
+app := fx.New(
+    app.Module(),
+    fx.Invoke(func(db *gorm.DB) {
+        // 验证 db 不为 nil
+        if db == nil {
+            panic("db is nil")
+        }
+    }),
+)
+```
+
+#### 11.6.4 常见错误
+
+**错误 1: 循环依赖**
+```go
+// 错误：A 依赖 B，B 依赖 A
+type A struct { b *B }
+type B struct { a *A }
+
+// 解决：引入中间层或重新设计
+```
+
+**错误 2: 未提供的依赖**
+```go
+// 错误：需要 *Config 但没有提供
+func NewService(cfg *config.Config) *Service { ... }
+
+// 解决：在 Module 中提供
+fx.Provide(config.Load)
+```
+
+**错误 3: 生命周期中使用阻塞操作**
+```go
+// 错误：OnStart 中阻塞
+lc.Append(fx.Hook{
+    OnStart: func(ctx context.Context) error {
+        time.Sleep(10 * time.Second)  // 错误！
+        return nil
+    },
+})
+
+// 解决：使用 goroutine
+OnStart: func(ctx context.Context) error {
+    go func() {
+        time.Sleep(10 * time.Second)
+    }()
+    return nil
+}
+```
+
+#### 11.6.5 性能优化
+
+1. **使用单例模式**
+   - FX 默认将所有 Provider 视为单例
+   - 一个依赖只创建一次，所有使用者共享
+
+2. **延迟初始化**
+   ```go
+   func Module() fx.Option {
+       return fx.Provide(
+           NewConfig,           // 启动时创建
+           LazyNewDB,           // 使用时才创建
+       )
+   }
+   ```
+
+3. **避免过度使用 fx.Invoke**
+   - `fx.Invoke` 应该只用于生命周期钩子
+   - 不要用于业务逻辑
+
+### 11.7 配置管理最佳实践
+
+#### 11.7.1 Viper 配置管理
+
+本项目使用 **Viper** 进行配置管理，以下是配置管理的最佳实践。
+
+**1. 配置加载优先级**
+
+配置优先级从高到低：
+1. **环境变量** - 最高优先级，适合容器化部署
+2. **配置文件**（`configs/config.{APP_ENV}.yaml`）- 适合传统部署
+3. **默认值**（代码中硬编码）- 确保配置总是有效
+
+**2. 环境变量命名规则**
+
+Viper 自动将配置字段转换为环境变量：
+- `server.port` → `SERVER_PORT`
+- `database.host` → `DB_HOST`
+- `jwt.secret` → `JWT_SECRET`
+
+**3. 配置文件结构**
+
+推荐使用 YAML 格式，层次清晰：
+```yaml
+server:
+  port: "8080"
+  mode: "debug"
+
+database:
+  host: "localhost"
+  port: "5432"
+```
+
+**4. 多环境配置**
+
+通过环境变量 `APP_ENV` 切换配置文件：
+- `APP_ENV=development` → 加载 `config.development.yaml`
+- `APP_ENV=production` → 加载 `config.production.yaml`
+
+**5. 敏感信息处理**
+
+生产环境敏感信息必须通过环境变量传递：
+```bash
+# 生产环境
+export JWT_SECRET="$(openssl rand -base64 32)"
+export DB_PASSWORD="strong-password-here"
+```
+
+**6. 配置验证**
+
+在 `Load()` 函数中添加配置验证：
+```go
+func Load() (*Config, error) {
+    // ... 加载配置 ...
+
+    // 验证必需的配置项
+    if cfg.JWT.Secret == "your-secret-key-change-in-production" && cfg.Server.Mode == "release" {
+        return nil, errors.New("JWT_SECRET must be set in production")
+    }
+
+    return &cfg, nil
+}
+```
+
+**7. 配置热更新（可选）**
+
+Viper 支持监听配置文件变化：
+```go
+v.WatchConfig()
+v.OnConfigChange(func(e fsnotify.Event) {
+    log.Printf("Config file changed: %s", e.Name)
+    // 重新加载配置...
+})
+```
+
+**8. 测试配置**
+
+测试环境直接构造 Config 结构体：
+```go
+func TestModule() fx.Option {
+    return fx.Provide(func() *config.Config {
+        return &config.Config{
+            Server: config.ServerConfig{
+                Port: "8080",
+                Mode: "test",
+            },
+            // ... 其他配置
+        }
+    })
+}
+```
+
+**9. 配置文件不应提交到版本控制**
+
+在 `.gitignore` 中添加：
+```
+# 生产环境配置（包含敏感信息）
+configs/config.production.yaml
+.env
+```
+
+只提交示例文件：
+```
+configs/config.development.yaml.example
+configs/config.production.yaml.example
+.env.example
+```
+
+**10. 使用默认值确保应用可启动**
+
+```go
+func setDefaults(v *viper.Viper) {
+    // 为所有配置项设置合理的默认值
+    v.SetDefault("server.port", "8080")
+    v.SetDefault("database.host", "localhost")
+    // ...
+}
+```
+
+这样即使没有配置文件，应用也能以默认配置启动。
+
+### 11.8 错误处理最佳实践
 
 1. **使用自定义错误类型**
 

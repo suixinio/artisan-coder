@@ -15,17 +15,21 @@ export interface RegisterRequest {
 export interface AuthResponse {
   user: import('./models').User
   token: string
-  refreshToken?: string
+  refreshToken: string
 }
 
-// API response wrapper
+// API error response
+export interface ApiError {
+  code: number
+  message: string
+}
+
+// Unified API response (backend format)
+// Backend returns: { code: 0, message: "success", data: {...} }
 export interface ApiResponse<T = any> {
-  success: boolean
-  data?: T
-  error?: {
-    code: string
-    message: string
-  }
+  code: number
+  message: string
+  data: T
 }
 
 // Paginated response

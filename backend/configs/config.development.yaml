@@ -1,0 +1,35 @@
+server:
+  port: "8080"
+  mode: "debug"  # debug 模式会打印详细日志
+  readTimeout: 15s
+  writeTimeout: 15s
+  shutdownTimeout: 10s
+
+database:
+  host: "localhost"
+  port: "5433"
+  user: "artisan"
+  password: "artisan_password_change_me"
+  dbName: "artisan_coder"
+  sslMode: "disable"
+
+jwt:
+  secret: "development-secret-key-do-not-use-in-production"
+  accessDuration: "1h"      # 1 hour
+  refreshDuration: "168h"   # 7 days
+  issuer: "artisan-coder"
+
+cors:
+  allowedOrigins:
+    - "http://localhost:5173"
+    - "http://localhost:3000"
+  allowedMethods:
+    - "GET"
+    - "POST"
+    - "PUT"
+    - "DELETE"
+    - "OPTIONS"
+  allowedHeaders:
+    - "Origin"
+    - "Content-Type"
+    - "Authorization"
